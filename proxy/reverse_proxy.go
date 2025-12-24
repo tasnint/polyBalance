@@ -15,12 +15,32 @@ type Proxy struct {
 	proxy   *httputil.ReverseProxy
 }
 
+func newUpstreamTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+
+		TLSHandshakeTimeout: 5 * time.Second,
+
+		ResponseHeaderTimeout: 5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
 func NewReverseProxy(rawURL string) *httputil.ReverseProxy {
 	target, err := url.Parse(rawURL)
 	if err != nil {
 		log.Fatalf("Invalid backend URL %s: %v", rawURL, err)
 	}
-	return httputil.NewSingleHostReverseProxy(target)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = newUpstreamTransport()
+	return proxy
 }
 
 // Reverse proxy is middleware that forwards requests from client to a backend server and returns repsonses from backend to client
