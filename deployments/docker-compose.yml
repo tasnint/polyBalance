@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  loadbalancer:
+    build: ..
+    container_name: polybalance-lb
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      - BACKEND_URLS=http://backend1:8001,http://backend2:8002,http://backend3:8003
+      - STRATEGY=round_robin
+      - METRICS_ENABLED=true
+      - METRICS_ADDR=:9090
+    depends_on:
+      - backend1
+      - backend2
+      - backend3
+
+  backend1:
+    image: nginx:alpine
+    container_name: backend1
+    ports:
+      - "8001:80"
+
+  backend2:
+    image: nginx:alpine
+    container_name: backend2
+    ports:
+      - "8002:80"
+
+  backend3:
+    image: nginx:alpine
+    container_name: backend3
+    ports:
+      - "8003:80"
