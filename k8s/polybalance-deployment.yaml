@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polybalance
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polybalance
+  template:
+    metadata:
+      labels:
+        app: polybalance
+    spec:
+      containers:
+        - name: polybalance
+          image: polybalance:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+            - containerPort: 9090
+          env:
+            - name: LB_BACKENDS
+              value: "http://backend:80"
+            - name: STRATEGY
+              value: "round_robin"
+            - name: METRICS_ENABLED
+              value: "true"
+            - name: METRICS_ADDR
+              value: ":9090"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5

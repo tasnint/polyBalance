@@ -121,7 +121,14 @@ func main() {
 	// ------------------------------
 	go func() {
 		logger.Info("Load balancer listening on %s", cfg.ListenAddr)
-		if err := http.ListenAndServe(cfg.ListenAddr, lbServer); err != nil {
+
+		mux := http.NewServeMux()
+
+		lbServer.RegisterHealthEndpoints(mux)
+
+		mux.Handle("/", lbServer)
+
+		if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
 			logger.Error("HTTP server stopped: %v", err)
 		}
 		cancel()
