@@ -2,10 +2,7 @@ package server
 
 import (
 	"fmt"
-	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"polybalance/backend"
 	"polybalance/proxy"
 	"polybalance/strategy"
@@ -14,6 +11,64 @@ import (
 type Server struct {
 	Backends []*backend.Backend
 	Strategy strategy.Strategy
+}
+
+const (
+	maxRetries = 2
+)
+
+func (s *Server) RegisterHealthEndpoints(mux *http.ServeMux) {
+
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if len(s.Backends) == 0 {
+			http.Error(w, "no backends available", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ready"))
+	})
+}
+
+func isRetryableMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
+}
+
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 // NewServer creates a new HTTP server with the given backends and strategy
@@ -33,8 +88,7 @@ func NewServer(backendURLS []string, weights []int, strat strategy.Strategy) (*S
 	// iterates over each backend URL, create a backend instance and add it to the slice
 	for i, rawURL := range backendURLS {
 		// parse the URL and create a reverse proxy
-		target := rawURL
-		rp := httputil.NewSingleHostReverseProxy(mustParseURL(target))
+		rp := proxy.NewReverseProxy(rawURL)
 
 		weight := 1
 		if len(weights) != 0 {
@@ -56,24 +110,42 @@ func NewServer(backendURLS []string, weights []int, strat strategy.Strategy) (*S
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	b := s.Strategy.NextBackend(s.Backends)
-	if b == nil {
-		http.Error(w, "No backend available", http.StatusServiceUnavailable)
+	// Non-idempotent → single attempt only
+	if !isRetryableMethod(r.Method) {
+		b := s.Strategy.NextBackend(s.Backends)
+		if b == nil {
+			http.Error(w, "No backend available", http.StatusServiceUnavailable)
+			return
+		}
+		proxy := proxy.NewProxy(b)
+		proxy.ServeHTTP(w, r)
 		return
 	}
 
-	// wrap with proxy layer
-	p := proxy.NewProxy(b)
+	var lastStatus int
 
-	// Sends request to chosen backend server
-	p.ServeHTTP(w, r)
-}
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 
-// Must parse URL helper
-func mustParseURL(raw string) *url.URL {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		log.Fatalf("invalid backend URL %s: %v", raw, err)
+		b := s.Strategy.NextBackend(s.Backends)
+		if b == nil {
+			http.Error(w, "No backend available", http.StatusServiceUnavailable)
+			return
+		}
+
+		rec := &responseRecorder{ResponseWriter: w}
+
+		p := proxy.NewProxy(b)
+		p.ServeHTTP(rec, r)
+
+		// Success or non-retryable failure → send response
+		if !isRetryableStatus(rec.status) {
+			if rec.status != 0 {
+				w.WriteHeader(rec.status)
+			}
+			return
+		}
+		lastStatus = rec.status
 	}
-	return parsed
+
+	http.Error(w, "Request failed after retries", lastStatus)
 }
