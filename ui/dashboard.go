@@ -742,7 +742,10 @@ const dashboardHTML = `<!DOCTYPE html>
 
         async function sendTestRequests() {
             const count = parseInt(document.getElementById('request-count').value) || 10;
-            log('Sending ' + count + ' test requests...', 'info');
+            const strategy = document.getElementById('strategy').value;
+            const timestamp = new Date().toLocaleTimeString();
+            
+            log('[' + timestamp + '] Sending ' + count + ' requests using ' + strategy + ' strategy...', 'info');
             
             try {
                 const res = await fetch('/api/send-requests?count=' + count);
@@ -750,19 +753,42 @@ const dashboardHTML = `<!DOCTYPE html>
                 
                 if (data.requests) {
                     const summary = {};
+                    let errors = 0;
                     data.requests.forEach(r => {
-                        const backend = r.backend || 'error';
-                        summary[backend] = (summary[backend] || 0) + 1;
+                        if (r.error) {
+                            errors++;
+                        } else {
+                            const backend = r.backend || 'unknown';
+                            summary[backend] = (summary[backend] || 0) + 1;
+                        }
                     });
                     
-                    let resultText = 'Results for ' + count + ' requests:\n';
-                    for (const [backend, cnt] of Object.entries(summary)) {
-                        resultText += '  ' + backend + ': ' + cnt + ' requests (' + Math.round(cnt/count*100) + '%)\n';
+                    const sortedBackends = Object.entries(summary).sort((a, b) => b[1] - a[1]);
+                    const maxCount = sortedBackends.length > 0 ? sortedBackends[0][1] : 0;
+                    
+                    let resultText = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+                    resultText += 'LOAD DISTRIBUTION REPORT\n';
+                    resultText += 'Time: ' + timestamp + ' | Strategy: ' + strategy + '\n';
+                    resultText += 'Total Requests: ' + count + ' | Successful: ' + (count - errors) + ' | Failed: ' + errors + '\n';
+                    resultText += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+                    
+                    sortedBackends.forEach(([backend, cnt]) => {
+                        const pct = Math.round(cnt/count*100);
+                        const barLen = Math.round((cnt/maxCount) * 20);
+                        const bar = '█'.repeat(barLen) + '░'.repeat(20 - barLen);
+                        const port = backend.split(':').pop();
+                        resultText += 'Backend :' + port + ' │ ' + bar + ' │ ' + cnt.toString().padStart(3) + ' reqs (' + pct.toString().padStart(2) + '%)\n';
+                    });
+                    
+                    if (errors > 0) {
+                        resultText += '\nErrors: ' + errors + ' requests failed (no healthy backend)\n';
                     }
-                    log(resultText, 'success');
+                    
+                    resultText += '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
+                    log(resultText, errors > 0 ? 'error' : 'success');
                 }
             } catch (e) {
-                log('Test requests failed: ' + e.message, 'error');
+                log('[' + timestamp + '] Test requests failed: ' + e.message, 'error');
             }
             
             fetchBackends();
