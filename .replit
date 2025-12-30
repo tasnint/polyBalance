@@ -29,17 +29,25 @@ args = "PolyBalance Load Balancer"
 name = "PolyBalance Load Balancer"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "go run ./cmd"
-waitForPort = 5000
-
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash start.sh"
+waitForPort = 5000
 
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 8082
+externalPort = 3001
 
 [deployment]
 deploymentTarget = "vm"
