@@ -5,12 +5,11 @@ import (
         "net/http"
         "polybalance/backend"
         "polybalance/proxy"
-        "polybalance/strategy"
 )
 
 type Server struct {
-        Backends []*backend.Backend
-        Strategy strategy.Strategy
+        Backends           []*backend.Backend
+        StrategyController *StrategyController
 }
 
 const (
@@ -71,24 +70,25 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
         return r.ResponseWriter.Write(b)
 }
 
-// NewServer creates a new HTTP server with the given backends and strategy
-func NewServer(backends []*backend.Backend, strat strategy.Strategy) (*Server, error) {
+// NewServer creates a new HTTP server with the given backends and strategy controller
+func NewServer(backends []*backend.Backend, stratCtrl *StrategyController) (*Server, error) {
         if len(backends) == 0 {
                 return nil, fmt.Errorf("no backends provided")
         }
 
         s := &Server{
-                Backends: backends,
-                Strategy: strat,
+                Backends:           backends,
+                StrategyController: stratCtrl,
         }
         return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+        strat := s.StrategyController.Current()
 
         // Non-idempotent → single attempt only
         if !isRetryableMethod(r.Method) {
-                b := s.Strategy.NextBackend(s.Backends)
+                b := strat.NextBackend(s.Backends)
                 if b == nil {
                         http.Error(w, "No backend available", http.StatusServiceUnavailable)
                         return
@@ -102,7 +102,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
         for attempt := 0; attempt <= maxRetries; attempt++ {
 
-                b := s.Strategy.NextBackend(s.Backends)
+                b := strat.NextBackend(s.Backends)
                 if b == nil {
                         http.Error(w, "No backend available", http.StatusServiceUnavailable)
                         return

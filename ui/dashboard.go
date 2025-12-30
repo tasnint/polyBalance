@@ -6,29 +6,30 @@ import (
         "net/http"
         "polybalance/backend"
         "polybalance/middleware"
+        "polybalance/server"
         "strconv"
         "time"
 )
 
 type Dashboard struct {
-        backends       []*backend.Backend
-        rateLimiter    *middleware.RateLimiter
-        requestLimiter *middleware.RequestLimiter
-        tlsConfig      *middleware.TLSConfig
-        strategy       string
-        startTime      time.Time
-        requestCount   int64
-        errorCount     int64
+        backends           []*backend.Backend
+        rateLimiter        *middleware.RateLimiter
+        requestLimiter     *middleware.RequestLimiter
+        tlsConfig          *middleware.TLSConfig
+        strategyController *server.StrategyController
+        startTime          time.Time
+        requestCount       int64
+        errorCount         int64
 }
 
-func NewDashboard(backends []*backend.Backend, rl *middleware.RateLimiter, reqLim *middleware.RequestLimiter, tlsCfg *middleware.TLSConfig, strategy string) *Dashboard {
+func NewDashboard(backends []*backend.Backend, rl *middleware.RateLimiter, reqLim *middleware.RequestLimiter, tlsCfg *middleware.TLSConfig, stratCtrl *server.StrategyController) *Dashboard {
         return &Dashboard{
-                backends:       backends,
-                rateLimiter:    rl,
-                requestLimiter: reqLim,
-                tlsConfig:      tlsCfg,
-                strategy:       strategy,
-                startTime:      time.Now(),
+                backends:           backends,
+                rateLimiter:        rl,
+                requestLimiter:     reqLim,
+                tlsConfig:          tlsCfg,
+                strategyController: stratCtrl,
+                startTime:          time.Now(),
         }
 }
 
@@ -40,6 +41,8 @@ func (d *Dashboard) RegisterRoutes(mux *http.ServeMux) {
         mux.HandleFunc("/api/backends/toggle", d.handleToggleBackend)
         mux.HandleFunc("/api/config", d.handleConfig)
         mux.HandleFunc("/api/test", d.handleTest)
+        mux.HandleFunc("/api/send-requests", d.handleSendRequests)
+        mux.HandleFunc("/api/strategy", d.handleStrategy)
 }
 
 func (d *Dashboard) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +66,8 @@ func (d *Dashboard) handleStatus(w http.ResponseWriter, r *http.Request) {
 
         status := map[string]interface{}{
                 "uptime_seconds":   int(time.Since(d.startTime).Seconds()),
-                "strategy":         d.strategy,
+                "strategy":         d.strategyController.Name(),
+                "strategies":       d.strategyController.AvailableStrategies(),
                 "total_backends":   len(d.backends),
                 "healthy_backends": healthyCount,
                 "rate_limit":       d.rateLimiter.GetStats(),
@@ -131,6 +135,60 @@ func (d *Dashboard) handleToggleBackend(w http.ResponseWriter, r *http.Request) 
         })
 }
 
+func (d *Dashboard) handleSendRequests(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+
+        countStr := r.URL.Query().Get("count")
+        count := 10
+        if countStr != "" {
+                if val, err := strconv.Atoi(countStr); err == nil && val > 0 && val <= 100 {
+                        count = val
+                }
+        }
+
+        host := r.Host
+        scheme := "http"
+        if r.TLS != nil {
+                scheme = "https"
+        }
+        baseURL := scheme + "://" + host
+
+        results := make([]map[string]interface{}, 0, count)
+        client := &http.Client{Timeout: 5 * time.Second}
+
+        for i := 0; i < count; i++ {
+                start := time.Now()
+                resp, err := client.Get(baseURL + "/")
+                elapsed := time.Since(start)
+
+                result := map[string]interface{}{
+                        "request_num": i + 1,
+                        "elapsed_ms":  elapsed.Milliseconds(),
+                }
+
+                if err != nil {
+                        result["status"] = "error"
+                        result["error"] = err.Error()
+                } else {
+                        result["status_code"] = resp.StatusCode
+                        var data map[string]interface{}
+                        json.NewDecoder(resp.Body).Decode(&data)
+                        resp.Body.Close()
+                        if server, ok := data["server"]; ok {
+                                result["backend"] = server
+                        }
+                        result["status"] = "ok"
+                }
+                results = append(results, result)
+        }
+
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "status":   "ok",
+                "count":    count,
+                "requests": results,
+        })
+}
+
 func (d *Dashboard) handleConfig(w http.ResponseWriter, r *http.Request) {
         if r.Method == http.MethodPost {
                 if err := r.ParseForm(); err != nil {
@@ -178,9 +236,48 @@ func (d *Dashboard) handleConfig(w http.ResponseWriter, r *http.Request) {
                 "rate_limit":    d.rateLimiter.GetStats(),
                 "request_limit": d.requestLimiter.GetStats(),
                 "tls":           d.tlsConfig.GetStats(),
-                "strategy":      d.strategy,
+                "strategy":      d.strategyController.Name(),
         }
         json.NewEncoder(w).Encode(config)
+}
+
+func (d *Dashboard) handleStrategy(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+
+        if r.Method == http.MethodPost {
+                if err := r.ParseForm(); err != nil {
+                        http.Error(w, err.Error(), http.StatusBadRequest)
+                        return
+                }
+
+                newStrategy := r.FormValue("strategy")
+                if newStrategy == "" {
+                        json.NewEncoder(w).Encode(map[string]interface{}{
+                                "status":  "error",
+                                "message": "Strategy name required",
+                        })
+                        return
+                }
+
+                if d.strategyController.Set(newStrategy) {
+                        json.NewEncoder(w).Encode(map[string]interface{}{
+                                "status":   "ok",
+                                "strategy": newStrategy,
+                                "message":  "Strategy changed to " + newStrategy,
+                        })
+                } else {
+                        json.NewEncoder(w).Encode(map[string]interface{}{
+                                "status":  "error",
+                                "message": "Invalid strategy: " + newStrategy,
+                        })
+                }
+                return
+        }
+
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "strategy":   d.strategyController.Name(),
+                "strategies": d.strategyController.AvailableStrategies(),
+        })
 }
 
 func (d *Dashboard) handleTest(w http.ResponseWriter, r *http.Request) {
@@ -247,169 +344,211 @@ const dashboardHTML = `<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PolyBalance Dashboard</title>
+    <title>PolyBalance - Tanisha's Load Balancer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Roboto+Mono&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: #fff;
+            font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #f5f7fa;
+            color: #333;
             min-height: 100vh;
             padding: 20px;
         }
         .container { max-width: 1400px; margin: 0 auto; }
-        h1 {
+        .header {
             text-align: center;
             margin-bottom: 30px;
-            font-size: 2.5rem;
-            background: linear-gradient(90deg, #00d4ff, #7b2ff7);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            padding: 20px;
         }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }
+        .logo {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+        .logo-poly { color: #5DADE2; }
+        .logo-balance { color: #2C3E50; font-weight: 400; }
+        .subtitle {
+            font-size: 1.25rem;
+            color: #2C3E50;
+            font-weight: 600;
+        }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; }
         .card {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 16px;
+            background: #fff;
+            border-radius: 12px;
             padding: 24px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            border: 1px solid #e8ecf1;
         }
         .card h2 {
-            font-size: 1.25rem;
+            font-size: 1.1rem;
             margin-bottom: 16px;
+            color: #2C3E50;
             display: flex;
             align-items: center;
             gap: 10px;
+            font-weight: 600;
         }
         .card h2::before {
             content: '';
             width: 8px;
             height: 8px;
-            background: #00d4ff;
+            background: #5DADE2;
             border-radius: 50%;
         }
         .status-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
         .status-item {
-            background: rgba(0, 0, 0, 0.2);
+            background: #f8fafc;
             padding: 16px;
-            border-radius: 12px;
+            border-radius: 10px;
             text-align: center;
+            border: 1px solid #e8ecf1;
         }
         .status-value {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #00d4ff;
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #5DADE2;
         }
-        .status-label { font-size: 0.875rem; color: #aaa; margin-top: 4px; }
-        .backend-list { display: flex; flex-direction: column; gap: 10px; }
+        .status-label { font-size: 0.8rem; color: #7f8c8d; margin-top: 4px; }
+        .backend-list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; }
         .backend-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 12px 16px;
-            background: rgba(0, 0, 0, 0.2);
+            padding: 10px 14px;
+            background: #f8fafc;
             border-radius: 8px;
+            border: 1px solid #e8ecf1;
         }
-        .backend-url { font-family: monospace; font-size: 0.9rem; }
+        .backend-url { font-family: 'Roboto Mono', monospace; font-size: 0.85rem; color: #2C3E50; }
         .badge {
-            padding: 4px 12px;
+            padding: 4px 10px;
             border-radius: 20px;
-            font-size: 0.75rem;
-            font-weight: bold;
+            font-size: 0.7rem;
+            font-weight: 600;
             text-transform: uppercase;
         }
-        .badge.healthy { background: rgba(0, 255, 136, 0.2); color: #00ff88; }
-        .badge.unhealthy { background: rgba(255, 68, 68, 0.2); color: #ff4444; }
-        .controls { display: flex; flex-direction: column; gap: 16px; }
-        .control-group label { display: block; margin-bottom: 8px; font-size: 0.9rem; color: #aaa; }
-        .control-row { display: flex; gap: 12px; align-items: center; }
-        input[type="number"], input[type="text"] {
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            padding: 10px 14px;
-            color: #fff;
+        .badge.healthy { background: #d4edda; color: #155724; }
+        .badge.unhealthy { background: #f8d7da; color: #721c24; }
+        .controls { display: flex; flex-direction: column; gap: 14px; }
+        .control-group label { display: block; margin-bottom: 6px; font-size: 0.85rem; color: #7f8c8d; font-weight: 500; }
+        .control-row { display: flex; gap: 10px; align-items: center; }
+        input[type="number"], input[type="text"], select {
+            background: #f8fafc;
+            border: 1px solid #dce4ec;
+            border-radius: 6px;
+            padding: 10px 12px;
+            color: #2C3E50;
             width: 100%;
-            font-size: 1rem;
+            font-size: 0.95rem;
+            font-family: inherit;
         }
-        input:focus { outline: none; border-color: #00d4ff; }
+        input:focus, select:focus { outline: none; border-color: #5DADE2; }
         .btn {
-            padding: 12px 24px;
+            padding: 10px 20px;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             cursor: pointer;
             font-weight: 600;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             transition: all 0.2s;
+            font-family: inherit;
         }
         .btn-primary {
-            background: linear-gradient(90deg, #00d4ff, #7b2ff7);
+            background: #5DADE2;
             color: #fff;
         }
-        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(0, 212, 255, 0.3); }
+        .btn-primary:hover { background: #3498db; transform: translateY(-1px); }
         .btn-secondary {
-            background: rgba(255, 255, 255, 0.1);
-            color: #fff;
-            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: #f8fafc;
+            color: #2C3E50;
+            border: 1px solid #dce4ec;
         }
-        .btn-secondary:hover { background: rgba(255, 255, 255, 0.15); }
-        .btn-danger { background: rgba(255, 68, 68, 0.2); color: #ff4444; }
-        .btn-success { background: rgba(0, 255, 136, 0.2); color: #00ff88; }
-        .test-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+        .btn-secondary:hover { background: #e8ecf1; }
+        .btn-danger { background: #f8d7da; color: #721c24; }
+        .btn-danger:hover { background: #f5c6cb; }
+        .btn-success { background: #d4edda; color: #155724; }
+        .btn-success:hover { background: #c3e6cb; }
+        .test-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
         .test-output {
-            background: rgba(0, 0, 0, 0.3);
+            background: #2C3E50;
             border-radius: 8px;
-            padding: 16px;
-            font-family: monospace;
-            font-size: 0.85rem;
-            min-height: 150px;
+            padding: 14px;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.8rem;
+            min-height: 180px;
             max-height: 300px;
             overflow-y: auto;
             white-space: pre-wrap;
+            color: #ecf0f1;
         }
         .toggle {
             position: relative;
-            width: 50px;
-            height: 26px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 13px;
+            width: 46px;
+            height: 24px;
+            background: #dce4ec;
+            border-radius: 12px;
             cursor: pointer;
             transition: background 0.3s;
         }
-        .toggle.active { background: rgba(0, 212, 255, 0.5); }
+        .toggle.active { background: #5DADE2; }
         .toggle::after {
             content: '';
             position: absolute;
-            width: 22px;
-            height: 22px;
+            width: 20px;
+            height: 20px;
             background: #fff;
             border-radius: 50%;
             top: 2px;
             left: 2px;
             transition: transform 0.3s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
         }
-        .toggle.active::after { transform: translateX(24px); }
-        .log-entry { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-        .log-entry.success { color: #00ff88; }
-        .log-entry.error { color: #ff4444; }
-        .log-entry.info { color: #00d4ff; }
+        .toggle.active::after { transform: translateX(22px); }
+        .log-entry { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .log-entry.success { color: #2ecc71; }
+        .log-entry.error { color: #e74c3c; }
+        .log-entry.info { color: #5DADE2; }
         .refresh-btn {
             position: fixed;
             bottom: 20px;
             right: 20px;
-            width: 56px;
-            height: 56px;
+            width: 50px;
+            height: 50px;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1.5rem;
+            font-size: 1.3rem;
+            box-shadow: 0 4px 12px rgba(93,173,226,0.4);
+        }
+        .request-tester {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+        }
+        .request-tester input {
+            width: 80px;
+        }
+        .note {
+            font-size: 0.75rem;
+            color: #7f8c8d;
+            margin-top: 8px;
+            font-style: italic;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>PolyBalance Load Balancer</h1>
+        <div class="header">
+            <div class="logo">
+                <span class="logo-poly">Poly</span><span class="logo-balance">Balance</span>
+            </div>
+            <div class="subtitle">Tanisha's 7 Layer Load Balancer</div>
+        </div>
         
         <div class="grid">
             <div class="card">
@@ -420,8 +559,13 @@ const dashboardHTML = `<!DOCTYPE html>
                         <div class="status-label">Uptime (seconds)</div>
                     </div>
                     <div class="status-item">
-                        <div class="status-value" id="strategy">-</div>
-                        <div class="status-label">Strategy</div>
+                        <select id="strategy" class="status-value" style="font-size:1rem;padding:8px;text-align:center;" onchange="changeStrategy(this.value)">
+                            <option value="round_robin">Round Robin</option>
+                            <option value="least_connections">Least Connections</option>
+                            <option value="latency">Latency</option>
+                            <option value="consistent_hash">Consistent Hash</option>
+                        </select>
+                        <div class="status-label">Strategy (click to change)</div>
                     </div>
                     <div class="status-item">
                         <div class="status-value" id="healthy-count">0</div>
@@ -439,6 +583,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 <div class="backend-list" id="backends">
                     <div class="backend-item">Loading...</div>
                 </div>
+                <p class="note">Note: After toggling to healthy, wait ~10 seconds for the circuit breaker to allow traffic again.</p>
             </div>
 
             <div class="card">
@@ -486,7 +631,13 @@ const dashboardHTML = `<!DOCTYPE html>
             </div>
 
             <div class="card" style="grid-column: 1 / -1;">
-                <h2>Test & Diagnostics</h2>
+                <h2>Load Balancer Testing</h2>
+                <div class="request-tester">
+                    <label>Send</label>
+                    <input type="number" id="request-count" value="10" min="1" max="100">
+                    <label>requests to test load balancing</label>
+                    <button class="btn btn-primary" onclick="sendTestRequests()">Send Requests</button>
+                </div>
                 <div class="test-buttons">
                     <button class="btn btn-secondary" onclick="runTest('health')">Test Health Check</button>
                     <button class="btn btn-secondary" onclick="runTest('ratelimit')">Test Rate Limiting</button>
@@ -526,7 +677,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 const data = await res.json();
                 
                 document.getElementById('uptime').textContent = data.uptime_seconds;
-                document.getElementById('strategy').textContent = data.strategy;
+                document.getElementById('strategy').value = data.strategy;
                 document.getElementById('healthy-count').textContent = data.healthy_backends;
                 document.getElementById('total-count').textContent = data.total_backends;
 
@@ -554,13 +705,13 @@ const dashboardHTML = `<!DOCTYPE html>
                 container.innerHTML = backends.map(b => 
                     '<div class="backend-item">' +
                     '<span class="backend-url">' + b.url + '</span>' +
-                    '<div style="display:flex;align-items:center;gap:10px;">' +
+                    '<div style="display:flex;align-items:center;gap:8px;">' +
                     '<span class="badge ' + (b.healthy ? 'healthy' : 'unhealthy') + '">' + 
                     (b.healthy ? 'Healthy' : 'Unhealthy') + '</span>' +
-                    '<span style="color:#aaa;font-size:0.8rem">(' + b.connections + ' conn)</span>' +
-                    '<button class="btn btn-sm ' + (b.healthy ? 'btn-danger' : 'btn-success') + '" ' +
+                    '<span style="color:#7f8c8d;font-size:0.75rem">(' + b.connections + ' conn)</span>' +
+                    '<button class="btn ' + (b.healthy ? 'btn-danger' : 'btn-success') + '" ' +
                     'onclick="toggleBackendHealth(\'' + b.url + '\')" ' +
-                    'style="padding:6px 12px;font-size:0.75rem;">' +
+                    'style="padding:5px 10px;font-size:0.7rem;">' +
                     (b.healthy ? 'Make Unhealthy' : 'Make Healthy') + '</button>' +
                     '</div>' +
                     '</div>'
@@ -575,13 +726,64 @@ const dashboardHTML = `<!DOCTYPE html>
                 log('Toggling health for ' + url + '...', 'info');
                 const res = await fetch('/api/backends/toggle?url=' + encodeURIComponent(url), { method: 'POST' });
                 const data = await res.json();
-                log('Toggle result: ' + data.message, data.status === 'ok' ? 'success' : 'error');
+                if (data.message && data.message.includes('healthy')) {
+                    log('Toggle result: ' + data.message + ' (wait ~10s for circuit breaker)', data.status === 'ok' ? 'success' : 'error');
+                } else {
+                    log('Toggle result: ' + data.message, data.status === 'ok' ? 'success' : 'error');
+                }
                 setTimeout(() => {
                     fetchBackends();
                     fetchStatus();
                 }, 500);
             } catch (e) {
                 log('Toggle failed: ' + e.message, 'error');
+            }
+        }
+
+        async function sendTestRequests() {
+            const count = parseInt(document.getElementById('request-count').value) || 10;
+            log('Sending ' + count + ' test requests...', 'info');
+            
+            try {
+                const res = await fetch('/api/send-requests?count=' + count);
+                const data = await res.json();
+                
+                if (data.requests) {
+                    const summary = {};
+                    data.requests.forEach(r => {
+                        const backend = r.backend || 'error';
+                        summary[backend] = (summary[backend] || 0) + 1;
+                    });
+                    
+                    let resultText = 'Results for ' + count + ' requests:\n';
+                    for (const [backend, cnt] of Object.entries(summary)) {
+                        resultText += '  ' + backend + ': ' + cnt + ' requests (' + Math.round(cnt/count*100) + '%)\n';
+                    }
+                    log(resultText, 'success');
+                }
+            } catch (e) {
+                log('Test requests failed: ' + e.message, 'error');
+            }
+            
+            fetchBackends();
+            fetchStatus();
+        }
+
+        async function changeStrategy(strategy) {
+            try {
+                log('Changing strategy to ' + strategy + '...', 'info');
+                const form = new URLSearchParams();
+                form.append('strategy', strategy);
+                const res = await fetch('/api/strategy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: form
+                });
+                const data = await res.json();
+                log('Strategy changed: ' + data.message, data.status === 'ok' ? 'success' : 'error');
+                fetchStatus();
+            } catch (e) {
+                log('Failed to change strategy: ' + e.message, 'error');
             }
         }
 

@@ -68,26 +68,30 @@ func main() {
         // ------------------------------
         // 3) Select strategy
         // ------------------------------
-        var strat strategy.Strategy
+        var initialStrategy strategy.Strategy
+        strategyName := cfg.Strategy
 
         switch cfg.Strategy {
         case "round_robin":
-                strat = strategy.NewRoundRobin()
+                initialStrategy = strategy.NewRoundRobin()
         case "least_connections":
-                strat = strategy.NewLeastConnections()
+                initialStrategy = strategy.NewLeastConnections()
         case "latency":
-                strat = strategy.NewLatencyStrategy()
+                initialStrategy = strategy.NewLatencyStrategy()
         case "consistent_hash":
-                strat = strategy.NewConsistentHash(50)
+                initialStrategy = strategy.NewConsistentHash(50)
         default:
                 logger.Info("Unknown strategy '%s', defaulting to round_robin", cfg.Strategy)
-                strat = strategy.NewRoundRobin()
+                initialStrategy = strategy.NewRoundRobin()
+                strategyName = "round_robin"
         }
+
+        strategyController := server.NewStrategyController(initialStrategy, strategyName)
 
         // ------------------------------
         // 4) Create HTTP server wrapper
         // ------------------------------
-        lbServer, err := server.NewServer(backends, strat)
+        lbServer, err := server.NewServer(backends, strategyController)
         if err != nil {
                 logger.Error("Failed to create load balancer server: %v", err)
                 return
@@ -148,7 +152,7 @@ func main() {
         // ------------------------------
         // 8) Create Dashboard
         // ------------------------------
-        dashboard := ui.NewDashboard(backends, rateLimiter, requestLimiter, tlsConfig, cfg.Strategy)
+        dashboard := ui.NewDashboard(backends, rateLimiter, requestLimiter, tlsConfig, strategyController)
 
         // ------------------------------
         // 9) Start Main Load Balancer Server
