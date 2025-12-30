@@ -17,9 +17,21 @@ type Config struct {
 	HealthTimeout  time.Duration
 	MetricsEnabled bool
 	MetricsAddr    string
+
+	RateLimitEnabled bool
+	RateLimitMax     int
+	RateLimitWindow  time.Duration
+
+	RequestLimitEnabled bool
+	MaxBodySize         int64
+	MaxHeaderSize       int
+
+	TLSEnabled  bool
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSAutoGen  bool
 }
 
-// LoadConfig loads configuration from environment variables.
 func LoadConfig() *Config {
 	cfg := &Config{
 		ListenAddr:     getEnv("LB_LISTEN_ADDR", ":8080"),
@@ -30,6 +42,19 @@ func LoadConfig() *Config {
 		HealthTimeout:  getDuration("LB_HEALTH_TIMEOUT", 1*time.Second),
 		MetricsEnabled: getBool("LB_METRICS_ENABLED", true),
 		MetricsAddr:    getEnv("LB_METRICS_ADDR", ":9090"),
+
+		RateLimitEnabled: getBool("LB_RATE_LIMIT_ENABLED", false),
+		RateLimitMax:     getInt("LB_RATE_LIMIT_MAX", 100),
+		RateLimitWindow:  getDuration("LB_RATE_LIMIT_WINDOW", 60*time.Second),
+
+		RequestLimitEnabled: getBool("LB_REQUEST_LIMIT_ENABLED", false),
+		MaxBodySize:         getInt64("LB_MAX_BODY_SIZE", 10*1024*1024),
+		MaxHeaderSize:       getInt("LB_MAX_HEADER_SIZE", 8192),
+
+		TLSEnabled:  getBool("LB_TLS_ENABLED", false),
+		TLSCertFile: getEnv("LB_TLS_CERT_FILE", "cert.pem"),
+		TLSKeyFile:  getEnv("LB_TLS_KEY_FILE", "key.pem"),
+		TLSAutoGen:  getBool("LB_TLS_AUTO_GEN", true),
 	}
 
 	if len(cfg.BackendURLs) == 0 {
@@ -38,8 +63,6 @@ func LoadConfig() *Config {
 
 	return cfg
 }
-
-// --- helpers ---
 
 func getEnv(key, def string) string {
 	val := os.Getenv(key)
@@ -59,6 +82,30 @@ func getBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func getInt(key string, def int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return def
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func getInt64(key string, def int64) int64 {
+	val := os.Getenv(key)
+	if val == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func getDuration(key string, def time.Duration) time.Duration {
@@ -93,7 +140,7 @@ func parseIntCSV(s string) []int {
 	for _, p := range parts {
 		n, err := strconv.Atoi(strings.TrimSpace(p))
 		if err != nil {
-			out = append(out, 1) // default weight
+			out = append(out, 1)
 		} else {
 			out = append(out, n)
 		}

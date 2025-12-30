@@ -13,9 +13,11 @@ import (
 	"polybalance/backend"
 	"polybalance/internal"
 	"polybalance/metrics"
+	"polybalance/middleware"
 	"polybalance/proxy"
 	"polybalance/server"
 	"polybalance/strategy"
+	"polybalance/ui"
 )
 
 func main() {
@@ -43,7 +45,7 @@ func main() {
 	backends := make([]*backend.Backend, 0, len(cfg.BackendURLs))
 
 	for i, rawURL := range cfg.BackendURLs {
-		rp := proxy.NewReverseProxy(rawURL) // helper to create reverse proxy
+		rp := proxy.NewReverseProxy(rawURL)
 		weight := 1
 
 		if i < len(cfg.Weights) {
@@ -92,7 +94,34 @@ func main() {
 	}
 
 	// ------------------------------
-	// 5) Start Health Checker
+	// 5) Initialize Middleware
+	// ------------------------------
+	rateLimiter := middleware.NewRateLimiter(
+		cfg.RateLimitMax,
+		cfg.RateLimitWindow,
+		cfg.RateLimitEnabled,
+	)
+	logger.Info("Rate limiter initialized (enabled=%v, max=%d, window=%v)",
+		cfg.RateLimitEnabled, cfg.RateLimitMax, cfg.RateLimitWindow)
+
+	requestLimiter := middleware.NewRequestLimiter(
+		cfg.MaxBodySize,
+		cfg.MaxHeaderSize,
+		cfg.RequestLimitEnabled,
+	)
+	logger.Info("Request limiter initialized (enabled=%v, maxBody=%d, maxHeader=%d)",
+		cfg.RequestLimitEnabled, cfg.MaxBodySize, cfg.MaxHeaderSize)
+
+	tlsConfig := middleware.NewTLSConfig(
+		cfg.TLSEnabled,
+		cfg.TLSCertFile,
+		cfg.TLSKeyFile,
+		cfg.TLSAutoGen,
+	)
+	logger.Info("TLS config initialized (enabled=%v, autoGen=%v)", cfg.TLSEnabled, cfg.TLSAutoGen)
+
+	// ------------------------------
+	// 6) Start Health Checker
 	// ------------------------------
 	ctx, cancel := context.WithCancel(context.Background())
 	hc := backend.NewHealthChecker(
@@ -105,7 +134,7 @@ func main() {
 	logger.Info("Health checker initialized.")
 
 	// ------------------------------
-	// 6) Start Metrics Server (optional)
+	// 7) Start Metrics Server (optional)
 	// ------------------------------
 	if cfg.MetricsEnabled {
 		go func() {
@@ -117,7 +146,12 @@ func main() {
 	}
 
 	// ------------------------------
-	// 7) Start Main Load Balancer Server
+	// 8) Create Dashboard
+	// ------------------------------
+	dashboard := ui.NewDashboard(backends, rateLimiter, requestLimiter, tlsConfig, cfg.Strategy)
+
+	// ------------------------------
+	// 9) Start Main Load Balancer Server
 	// ------------------------------
 	go func() {
 		logger.Info("Load balancer listening on %s", cfg.ListenAddr)
@@ -126,16 +160,22 @@ func main() {
 
 		lbServer.RegisterHealthEndpoints(mux)
 
+		dashboard.RegisterRoutes(mux)
+
 		mux.Handle("/", lbServer)
 
-		if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
+		var handler http.Handler = mux
+		handler = requestLimiter.Middleware(handler)
+		handler = rateLimiter.Middleware(handler)
+
+		if err := http.ListenAndServe(cfg.ListenAddr, handler); err != nil {
 			logger.Error("HTTP server stopped: %v", err)
 		}
 		cancel()
 	}()
 
 	// ------------------------------
-	// 8) Graceful shutdown on CTRL+C
+	// 10) Graceful shutdown on CTRL+C
 	// ------------------------------
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
