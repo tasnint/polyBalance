@@ -1,7 +1,7 @@
 # PolyBalance Load Balancer
 
 ## Overview
-PolyBalance is a Go-based HTTP load balancer that supports multiple load balancing strategies including round-robin, least connections, latency-based, and consistent hashing.
+PolyBalance is a Go-based HTTP load balancer that supports multiple load balancing strategies including round-robin, least connections, latency-based, and consistent hashing. It includes rate limiting, request size limits, TLS termination support, and a web-based dashboard for monitoring and testing.
 
 ## Project Structure
 ```
@@ -10,9 +10,11 @@ polybalance/
 ├── backend/       - Backend server management and health checking
 ├── internal/      - Configuration and logging utilities
 ├── metrics/       - Prometheus metrics integration
+├── middleware/    - Rate limiting, request limits, TLS termination
 ├── proxy/         - Reverse proxy implementation
 ├── server/        - HTTP server with retry logic
 ├── strategy/      - Load balancing strategy implementations
+├── ui/            - Web dashboard for monitoring and testing
 ├── k8/            - Kubernetes deployment manifests
 ├── k8s/           - Alternative K8s manifests
 └── deployments/   - Docker Compose configuration
@@ -31,11 +33,31 @@ The load balancer is configured via environment variables:
 | `LB_HEALTH_TIMEOUT` | `1s` | Health check timeout |
 | `LB_METRICS_ENABLED` | `true` | Enable Prometheus metrics |
 | `LB_METRICS_ADDR` | `:9090` | Metrics server address |
+| `LB_RATE_LIMIT_ENABLED` | `false` | Enable rate limiting |
+| `LB_RATE_LIMIT_MAX` | `100` | Max requests per window |
+| `LB_RATE_LIMIT_WINDOW` | `60s` | Rate limit time window |
+| `LB_REQUEST_LIMIT_ENABLED` | `false` | Enable request size limits |
+| `LB_MAX_BODY_SIZE` | `10485760` | Max request body size (10MB) |
+| `LB_MAX_HEADER_SIZE` | `8192` | Max header size (8KB) |
+| `LB_TLS_ENABLED` | `false` | Enable TLS termination |
+| `LB_TLS_CERT_FILE` | `cert.pem` | TLS certificate file |
+| `LB_TLS_KEY_FILE` | `key.pem` | TLS private key file |
+| `LB_TLS_AUTO_GEN` | `true` | Auto-generate self-signed cert |
 
 ## Endpoints
 - `/` - Proxied requests to backends
 - `/healthz` - Health check endpoint
 - `/readyz` - Readiness check endpoint
+- `/ui` - Web dashboard for monitoring and testing
+
+## Web Dashboard
+Access the dashboard at `/ui` to:
+- View system status (uptime, strategy, backend counts)
+- Monitor backend server health in real-time
+- Enable/disable rate limiting with configurable limits
+- Enable/disable request size limits
+- Run diagnostic tests (health checks, rate limit tests, connection tests)
+- Test endpoints directly from the UI
 
 ## Running Locally
 ```bash
@@ -48,5 +70,17 @@ go run ./cmd
 3. **Latency** - Routes to backend with lowest response latency
 4. **Consistent Hash** - Routes based on request hash for session affinity
 
+## Features
+- **Rate Limiting** - IP-based rate limiting with configurable requests/window
+- **Request Limits** - Body and header size limits to prevent abuse
+- **TLS Termination** - HTTPS support with auto-generated or custom certificates
+- **Circuit Breaker** - Automatic backend removal on repeated failures
+- **Health Checks** - Continuous backend health monitoring
+- **Prometheus Metrics** - Built-in metrics endpoint for monitoring
+
 ## Recent Changes
+- 2025-12-30: Added web UI dashboard for monitoring and testing
+- 2025-12-30: Added rate limiting middleware
+- 2025-12-30: Added request size limits middleware
+- 2025-12-30: Added TLS termination support
 - 2025-12-30: Configured for Replit environment (port 5000)
