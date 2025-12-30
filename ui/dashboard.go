@@ -37,6 +37,7 @@ func (d *Dashboard) RegisterRoutes(mux *http.ServeMux) {
         mux.HandleFunc("/ui/", d.handleDashboard)
         mux.HandleFunc("/api/status", d.handleStatus)
         mux.HandleFunc("/api/backends", d.handleBackends)
+        mux.HandleFunc("/api/backends/toggle", d.handleToggleBackend)
         mux.HandleFunc("/api/config", d.handleConfig)
         mux.HandleFunc("/api/test", d.handleTest)
 }
@@ -78,8 +79,9 @@ func (d *Dashboard) handleBackends(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Cache-Control", "no-cache")
 
         backends := make([]map[string]interface{}, 0, len(d.backends))
-        for _, b := range d.backends {
+        for i, b := range d.backends {
                 backends = append(backends, map[string]interface{}{
+                        "id":          i,
                         "url":         b.URL.String(),
                         "healthy":     b.IsAlive(),
                         "weight":      b.Weight,
@@ -88,6 +90,45 @@ func (d *Dashboard) handleBackends(w http.ResponseWriter, r *http.Request) {
         }
 
         json.NewEncoder(w).Encode(backends)
+}
+
+func (d *Dashboard) handleToggleBackend(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+
+        if r.Method != http.MethodPost {
+                http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+                return
+        }
+
+        backendURL := r.URL.Query().Get("url")
+        if backendURL == "" {
+                json.NewEncoder(w).Encode(map[string]interface{}{
+                        "status":  "error",
+                        "message": "Backend URL required",
+                })
+                return
+        }
+
+        client := &http.Client{Timeout: 5 * time.Second}
+        resp, err := client.Get(backendURL + "/toggle-health")
+        if err != nil {
+                json.NewEncoder(w).Encode(map[string]interface{}{
+                        "status":  "error",
+                        "message": "Failed to toggle: " + err.Error(),
+                })
+                return
+        }
+        defer resp.Body.Close()
+
+        var result string
+        buf := make([]byte, 256)
+        n, _ := resp.Body.Read(buf)
+        result = string(buf[:n])
+
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "status":  "ok",
+                "message": result,
+        })
 }
 
 func (d *Dashboard) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -513,15 +554,34 @@ const dashboardHTML = `<!DOCTYPE html>
                 container.innerHTML = backends.map(b => 
                     '<div class="backend-item">' +
                     '<span class="backend-url">' + b.url + '</span>' +
-                    '<div>' +
+                    '<div style="display:flex;align-items:center;gap:10px;">' +
                     '<span class="badge ' + (b.healthy ? 'healthy' : 'unhealthy') + '">' + 
                     (b.healthy ? 'Healthy' : 'Unhealthy') + '</span>' +
-                    ' <span style="color:#aaa;font-size:0.8rem">(' + b.connections + ' conn)</span>' +
+                    '<span style="color:#aaa;font-size:0.8rem">(' + b.connections + ' conn)</span>' +
+                    '<button class="btn btn-sm ' + (b.healthy ? 'btn-danger' : 'btn-success') + '" ' +
+                    'onclick="toggleBackendHealth(\'' + b.url + '\')" ' +
+                    'style="padding:6px 12px;font-size:0.75rem;">' +
+                    (b.healthy ? 'Make Unhealthy' : 'Make Healthy') + '</button>' +
                     '</div>' +
                     '</div>'
                 ).join('');
             } catch (e) {
                 log('Failed to fetch backends: ' + e.message, 'error');
+            }
+        }
+
+        async function toggleBackendHealth(url) {
+            try {
+                log('Toggling health for ' + url + '...', 'info');
+                const res = await fetch('/api/backends/toggle?url=' + encodeURIComponent(url), { method: 'POST' });
+                const data = await res.json();
+                log('Toggle result: ' + data.message, data.status === 'ok' ? 'success' : 'error');
+                setTimeout(() => {
+                    fetchBackends();
+                    fetchStatus();
+                }, 500);
+            } catch (e) {
+                log('Toggle failed: ' + e.message, 'error');
             }
         }
 

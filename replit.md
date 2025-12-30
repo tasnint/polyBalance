@@ -54,6 +54,7 @@ The load balancer is configured via environment variables:
 Access the dashboard at `/ui` to:
 - View system status (uptime, strategy, backend counts)
 - Monitor backend server health in real-time
+- **Toggle backend health** with one-click buttons (Make Unhealthy/Make Healthy)
 - Enable/disable rate limiting with configurable limits
 - Enable/disable request size limits
 - Run diagnostic tests (health checks, rate limit tests, connection tests)
@@ -89,12 +90,14 @@ This starts:
 
 ## Testing Health-Aware Load Balancing
 1. Visit `/ui` to see the dashboard with healthy backends
-2. Toggle a backend's health: `curl http://localhost:8081/toggle-health`
+2. Click the "Make Unhealthy" button next to any backend
 3. Watch the dashboard - the backend will show as unhealthy after the next health check
-4. Requests will only go to healthy backends
-5. Toggle health back to see the backend re-enter rotation
+4. Requests will only go to healthy backends (test with the "Test /" button)
+5. Click "Make Healthy" to restore the backend - it will re-enter rotation after ~10 seconds (circuit breaker cooldown)
 
 ## Recent Changes
+- 2025-12-30: Added one-click toggle buttons in UI for backend health testing
+- 2025-12-30: Fixed critical bug - server and health checker now share same backend instances
 - 2025-12-30: Added demo backend servers with /healthz and /toggle-health endpoints
 - 2025-12-30: Added request ID headers (X-Request-ID) to all proxied requests
 - 2025-12-30: Added logging for which backend handles each request
