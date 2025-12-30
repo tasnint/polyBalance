@@ -1,0 +1,47 @@
+modules = ["go-1.21", "go-1.24"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+LB_LISTEN_ADDR = "0.0.0.0:5000"
+LB_BACKENDS = "http://localhost:8081,http://localhost:8082"
+LB_STRATEGY = "round_robin"
+LB_METRICS_ENABLED = "false"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "PolyBalance Load Balancer"
+
+[[workflows.workflow]]
+name = "PolyBalance Load Balancer"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "go run ./cmd"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[deployment]
+deploymentTarget = "vm"
+run = ["./polybalance"]
+build = ["go", "build", "-o", "polybalance", "./cmd"]
