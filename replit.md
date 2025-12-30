@@ -78,7 +78,26 @@ go run ./cmd
 - **Health Checks** - Continuous backend health monitoring
 - **Prometheus Metrics** - Built-in metrics endpoint for monitoring
 
+## Running with Backend Servers
+The project includes demo backend servers that respond to /healthz and regular requests:
+```bash
+bash start.sh
+```
+This starts:
+- 2 backend servers on ports 8081 and 8082
+- The load balancer on port 5000
+
+## Testing Health-Aware Load Balancing
+1. Visit `/ui` to see the dashboard with healthy backends
+2. Toggle a backend's health: `curl http://localhost:8081/toggle-health`
+3. Watch the dashboard - the backend will show as unhealthy after the next health check
+4. Requests will only go to healthy backends
+5. Toggle health back to see the backend re-enter rotation
+
 ## Recent Changes
+- 2025-12-30: Added demo backend servers with /healthz and /toggle-health endpoints
+- 2025-12-30: Added request ID headers (X-Request-ID) to all proxied requests
+- 2025-12-30: Added logging for which backend handles each request
 - 2025-12-30: Added web UI dashboard for monitoring and testing
 - 2025-12-30: Added rate limiting middleware
 - 2025-12-30: Added request size limits middleware

@@ -87,7 +87,7 @@ func main() {
         // ------------------------------
         // 4) Create HTTP server wrapper
         // ------------------------------
-        lbServer, err := server.NewServer(cfg.BackendURLs, cfg.Weights, strat)
+        lbServer, err := server.NewServer(backends, strat)
         if err != nil {
                 logger.Error("Failed to create load balancer server: %v", err)
                 return
