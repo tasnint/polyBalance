@@ -2,6 +2,9 @@
 
 A Go-based HTTP load balancer that supports multiple load balancing strategies including round-robin, least connections, latency-based, and consistent hashing. It includes rate limiting, request size limits, TLS termination support, and a web-based dashboard for monitoring and testing.
 
+## Demo Video:
+https://youtu.be/iRhG-QsTth4
+
 ## Features
 
 - **Multiple Load Balancing Strategies**: Round-robin, least connections, latency-based, consistent hashing
