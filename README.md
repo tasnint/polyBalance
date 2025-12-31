@@ -12,6 +12,33 @@ A Go-based HTTP load balancer that supports multiple load balancing strategies i
 - **Web Dashboard**: Real-time monitoring and testing interface
 - **Prometheus Metrics**: Built-in metrics endpoint for monitoring
 
+## Limiting factors of this project:
+Requests fail above 100: this reflecrs real-world load balancing challenges:
+
+Why Large Request Bursts Fail?
+**1. Rate Limiting Kicks In**
+The rate limiter defaults to 100 requests per 60-second window per IP. When you send 100+ requests instantly, they all come from the same IP (the dashboard), so the rate limiter starts rejecting them with "429 Too Many Requests" after the first 100.
+
+**2. Connection Pool Exhaustion**
+Go's default HTTP client only keeps 2 idle connections per host. When you burst 100+ requests:
+The first few requests use available connections
+Remaining requests queue up waiting for connections
+This creates a bottleneck → timeouts → failures
+
+**3. Sequential Processing**
+The test handler processes requests one-by-one in a loop (synchronously). Each request must complete before the next starts, which:
+Magnifies latency under load
+Makes the burst take much longer than expected
+Increases chance of timeouts
+
+**This Mirrors Real-World Scenarios!**
+This is exactly what happens in production load balancers:
+- Connection limits prevent server exhaustion
+- Rate limiting protects backends from abuse
+- Timeouts prevent requests from hanging forever
+- Key Takeaway
+- Load balancers must balance between throughput (handling many requests) and protection (preventing overload). The failures you're seeing are the protection mechanisms working correctly!
+
 ## Quick Start (Windows PowerShell)
 
 ### Prerequisites
